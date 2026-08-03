@@ -1,0 +1,7 @@
+id = "vaccination_analysis"
+name = "Vaccination Analysis"
+group = "Campaign Modules"
+icon = "💉"
+order = 10
+status = "active"
+entry_point = "campaign_analytics.modules.vaccination.module:render"

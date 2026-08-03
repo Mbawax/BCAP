@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+Bornoenv/
+.streamlit/secrets.toml
+data/uploads/*
+!data/uploads/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/exports/*
+!data/exports/.gitkeep
+data/temp/*
+!data/temp/.gitkeep
+logs/*
+!logs/.gitkeep

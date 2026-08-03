@@ -1,0 +1,7 @@
+id = "teams_reporting"
+name = "Teams Reporting"
+group = "Campaign Modules"
+icon = "👥"
+order = 20
+status = "active"
+entry_point = "campaign_analytics.modules.teams_reporting.module:render"

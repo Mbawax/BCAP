@@ -1,0 +1,2 @@
+"""Vaccination Analysis campaign module."""
+

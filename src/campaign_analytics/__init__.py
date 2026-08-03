@@ -1,0 +1,2 @@
+"""Campaign Analytics Platform package."""
+

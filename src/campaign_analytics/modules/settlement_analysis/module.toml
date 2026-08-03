@@ -1,0 +1,7 @@
+id = "settlement_analysis"
+name = "Settlement Analysis"
+group = "Campaign Modules"
+icon = "📍"
+order = 30
+status = "active"
+entry_point = "campaign_analytics.modules.settlement_analysis.module:render"

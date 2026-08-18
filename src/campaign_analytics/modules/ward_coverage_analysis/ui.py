@@ -1,13 +1,14 @@
-"""Streamlit UI workflow for Coverage Analysis.
+"""Streamlit UI workflow for Ward Coverage Analysis.
 
-This module combines settlement-level Vaccination Coverage, Household Coverage,
-and Settlement Visitation data into a master table, then provides both
-settlement-level and ward-level analysis views.
+This module accepts ward-level Vaccination Coverage, Household Coverage,
+and Visitation data, joins them into a ward master table, and provides
+ward-level analysis with RAG thresholds, operational issue detection,
+and Excel/CSV exports.
 
 Complete Workflow
 -----------------
-Data -> Settlement Master -> Ward Aggregation -> Thresholds -> RAG Flags
-     -> Operational Issues -> Settlement Drill-down -> Downloads
+Data → Ward Master → Thresholds → RAG Flags
+     → Operational Issues → Downloads
 """
 
 from hashlib import sha256
@@ -20,6 +21,8 @@ from campaign_analytics.components.data_io import read_tabular_upload, source_pr
 from campaign_analytics.components.notifications import validation_messages
 from campaign_analytics.components.tables import data_table
 from campaign_analytics.components.upload import upload_data_file
+
+# Reuse shared constructs from Coverage Analysis.
 from campaign_analytics.modules.coverage_analysis.processor import (
     COL_HOUSEHOLD,
     COL_ISSUE_TYPE,
@@ -27,63 +30,59 @@ from campaign_analytics.modules.coverage_analysis.processor import (
     COL_VACCINATION,
     COL_VISITATION,
     COL_WARD,
-    COL_SETTLEMENT,
-    CoverageAnalysisSummary,
     CoverageThreshold,
     DEFAULT_THRESHOLDS,
-    HOUSEHOLD_FIELDS,
     ISSUE_DESCRIPTIONS,
     ISSUE_LABELS,
     STATUS_HOUSEHOLD,
     STATUS_VACCINATION,
     STATUS_VISITATION,
-    VACCINATION_FIELDS,
-    VISITATION_FIELDS,
-    VISITATION_REQUIRED_FIELDS,
     _apply_excel_formatting,
     apply_thresholds,
-    build_settlement_master,
-    build_ward_summary,
     detect_operational_issues,
-    generate_coverage_excel_report,
-    suggest_household_mapping,
-    suggest_vaccination_mapping,
-    suggest_visitation_mapping,
-    validate_inputs,
 )
+
+# Import ward-specific processor functions.
+from campaign_analytics.modules.ward_coverage_analysis.processor import (
+    WARD_HOUSEHOLD_FIELDS,
+    WARD_VACCINATION_FIELDS,
+    WARD_VISITATION_FIELDS,
+    WARD_VISITATION_REQUIRED_FIELDS,
+    WardCoverageAnalysisSummary,
+    build_ward_master,
+    generate_ward_coverage_excel_report,
+    suggest_ward_household_mapping,
+    suggest_ward_vaccination_mapping,
+    suggest_ward_visitation_mapping,
+    validate_ward_inputs,
+)
+
 from campaign_analytics.ui.components import kpi_card, page_header
 
-MODULE_KEY = "coverage_analysis"
+MODULE_KEY = "ward_coverage_analysis"
 
 # Mapping from indicator column to its status column (for display ordering).
 _INDICATOR_COLS = [COL_VISITATION, COL_VACCINATION, COL_HOUSEHOLD]
 _STATUS_COLS = [STATUS_VISITATION, STATUS_VACCINATION, STATUS_HOUSEHOLD]
 
-# Colours used for conditional formatting — accessible and high contrast.
-_STATUS_COLOURS = {
-    "Red": "background-color: #FECACA; color: #991B1B",
-    "Yellow": "background-color: #FEF08A; color: #854D0E",
-    "Green": "background-color: #BBF7D0; color: #166534",
-    "N/A": "background-color: #F3F4F6; color: #6B7280",
-}
 
-
-def render_coverage_analysis_module() -> None:
-    """Render the complete Coverage Analysis workflow."""
+def render_ward_coverage_analysis_module() -> None:
+    """Render the complete Ward Coverage Analysis workflow."""
     _initialise_state()
 
     page_header(
-        "Coverage Analysis",
-        "Combine settlement-level campaign indicators to produce both "
-        "settlement-level and ward-level coverage analysis.",
+        "Ward Coverage Analysis",
+        "Analyse ward-level campaign indicators with RAG classification "
+        "and operational issue detection.  Data is uploaded at ward level "
+        "— no settlement aggregation is performed.",
         "Campaign module",
     )
 
     df_vaccination, df_household, df_visitation = _render_uploads()
     if df_vaccination is None:
         st.info(
-            "Please upload the **Vaccination Coverage** dataset to proceed. "
-            "This dataset provides the baseline settlement roster."
+            "Please upload the **ward-level Vaccination Coverage** dataset to proceed. "
+            "This dataset provides the baseline ward roster."
         )
         return
 
@@ -93,7 +92,7 @@ def render_coverage_analysis_module() -> None:
 
     _clear_stale_results(vacc_mapping, hh_mapping, vis_mapping)
 
-    report = validate_inputs(
+    report = validate_ward_inputs(
         df_vaccination, vacc_mapping,
         df_household, hh_mapping,
         df_visitation, vis_mapping,
@@ -102,12 +101,12 @@ def render_coverage_analysis_module() -> None:
     _render_validation(report)
 
     if st.button(
-        "Run Coverage Analysis",
+        "Run Ward Coverage Analysis",
         type="primary",
         disabled=not report.is_valid,
         key=f"{MODULE_KEY}_run_button",
     ):
-        summary, df_master = build_settlement_master(
+        summary, df_ward_master = build_ward_master(
             df_vaccination=df_vaccination,
             vaccination_mapping=vacc_mapping,
             df_household=df_household,
@@ -115,11 +114,9 @@ def render_coverage_analysis_module() -> None:
             df_visitation=df_visitation,
             visitation_mapping=vis_mapping,
         )
-        df_ward = build_ward_summary(df_master)
         st.session_state[f"{MODULE_KEY}_results"] = {
             "summary": summary,
-            "settlement": df_master,
-            "ward": df_ward,
+            "ward": df_ward_master,
             "fingerprint": _compute_fingerprint(
                 vacc_mapping, hh_mapping, vis_mapping
             ),
@@ -129,7 +126,6 @@ def render_coverage_analysis_module() -> None:
     if results:
         _render_results(
             results["summary"],
-            results["settlement"],
             results["ward"],
         )
 
@@ -137,7 +133,7 @@ def render_coverage_analysis_module() -> None:
 # ── Session state ─────────────────────────────────────────────────────────────
 
 def _initialise_state() -> None:
-    """Initialize session state variables for coverage analysis."""
+    """Initialize session state variables for ward coverage analysis."""
     defaults = {
         f"{MODULE_KEY}_vacc_file": None,
         f"{MODULE_KEY}_hh_file": None,
@@ -157,35 +153,35 @@ def _render_uploads() -> tuple[
     pd.DataFrame | None,
     pd.DataFrame | None,
 ]:
-    """Render upload controls for the three input datasets."""
+    """Render upload controls for the three ward-level input datasets."""
     st.subheader("1. File Uploads")
 
     c1, c2, c3 = st.columns(3)
     with c1:
         vacc_upload = upload_data_file(
-            "Vaccination Coverage *",
+            "Ward Vaccination Coverage *",
             key=f"{MODULE_KEY}_vacc_upload",
             help_text=(
-                "Upload the Vaccination Coverage dataset with LGA, Ward, "
-                "Settlement, and Vaccination Coverage % columns."
+                "Upload the ward-level Vaccination Coverage dataset with "
+                "LGA, Ward, and Vaccination Coverage % columns."
             ),
         )
     with c2:
         hh_upload = upload_data_file(
-            "Household Coverage (Optional)",
+            "Ward Household Coverage (Optional)",
             key=f"{MODULE_KEY}_hh_upload",
             help_text=(
-                "Upload the Household Coverage dataset with LGA, Ward, "
-                "Settlement, and Household Coverage % columns."
+                "Upload the ward-level Household Coverage dataset with "
+                "LGA, Ward, and Household Coverage % columns."
             ),
         )
     with c3:
         vis_upload = upload_data_file(
-            "Settlement Visitation (Optional)",
+            "Ward Visitation (Optional)",
             key=f"{MODULE_KEY}_vis_upload",
             help_text=(
-                "Upload the Settlement Visitation submission data with "
-                "LGA, Ward, and Settlement columns."
+                "Upload the ward-level Visitation dataset with "
+                "LGA, Ward, and Visitation % columns."
             ),
         )
 
@@ -228,15 +224,16 @@ def _render_mappers(
     """Render column mapping UI sections for all uploaded datasets."""
     st.subheader("2. Column Mappings")
     st.caption(
-        "Map LGA, Ward, Settlement, and coverage columns for accurate analysis."
+        "Map LGA, Ward, and coverage columns for accurate analysis. "
+        "Data is at ward level — no settlement column is needed."
     )
 
     # Vaccination Coverage (Required).
     st.markdown("##### 💉 Vaccination Coverage Mappings")
-    vacc_suggestions = suggest_vaccination_mapping(list(df_vaccination.columns))
+    vacc_suggestions = suggest_ward_vaccination_mapping(list(df_vaccination.columns))
     vacc_mapping = render_column_mapper(
-        fields=list(VACCINATION_FIELDS),
-        required_fields=set(VACCINATION_FIELDS),
+        fields=list(WARD_VACCINATION_FIELDS),
+        required_fields=set(WARD_VACCINATION_FIELDS),
         source_columns=list(df_vaccination.columns),
         suggestions=vacc_suggestions,
         key_prefix=f"{MODULE_KEY}_vacc",
@@ -246,23 +243,23 @@ def _render_mappers(
     hh_mapping: dict = {}
     if df_household is not None and not df_household.empty:
         st.markdown("##### 🏠 Household Coverage Mappings")
-        hh_suggestions = suggest_household_mapping(list(df_household.columns))
+        hh_suggestions = suggest_ward_household_mapping(list(df_household.columns))
         hh_mapping = render_column_mapper(
-            fields=list(HOUSEHOLD_FIELDS),
-            required_fields=set(HOUSEHOLD_FIELDS),
+            fields=list(WARD_HOUSEHOLD_FIELDS),
+            required_fields=set(WARD_HOUSEHOLD_FIELDS),
             source_columns=list(df_household.columns),
             suggestions=hh_suggestions,
             key_prefix=f"{MODULE_KEY}_hh",
         )
 
-    # Settlement Visitation.
+    # Visitation.
     vis_mapping: dict = {}
     if df_visitation is not None and not df_visitation.empty:
-        st.markdown("##### 📍 Settlement Visitation Mappings")
-        vis_suggestions = suggest_visitation_mapping(list(df_visitation.columns))
+        st.markdown("##### 📍 Visitation Mappings")
+        vis_suggestions = suggest_ward_visitation_mapping(list(df_visitation.columns))
         vis_mapping = render_column_mapper(
-            fields=list(VISITATION_FIELDS),
-            required_fields=set(VISITATION_REQUIRED_FIELDS),
+            fields=list(WARD_VISITATION_FIELDS),
+            required_fields=set(WARD_VISITATION_REQUIRED_FIELDS),
             source_columns=list(df_visitation.columns),
             suggestions=vis_suggestions,
             key_prefix=f"{MODULE_KEY}_vis",
@@ -494,8 +491,7 @@ def _render_styled_table(
 # ── Results ───────────────────────────────────────────────────────────────────
 
 def _render_results(
-    summary: CoverageAnalysisSummary,
-    df_settlement: pd.DataFrame,
+    summary: WardCoverageAnalysisSummary,
     df_ward: pd.DataFrame,
 ) -> None:
     """Render threshold config, then tabs for results."""
@@ -504,47 +500,38 @@ def _render_results(
     # Threshold configuration — always visible when results exist.
     thresholds = _render_threshold_config()
 
-    # Apply thresholds to both tables (presentation layer only).
-    df_settlement_display = apply_thresholds(df_settlement, thresholds)
+    # Apply thresholds to the ward table (presentation layer only).
     df_ward_display = apply_thresholds(df_ward, thresholds)
 
     # Detect operational issues from ward-level data.
     df_issues = detect_operational_issues(df_ward, thresholds)
 
-    st.subheader("4. Coverage Analysis Results")
+    st.subheader("4. Ward Coverage Analysis Results")
 
-    tab_summary, tab_settlement, tab_ward, tab_issues, tab_downloads = st.tabs([
+    tab_summary, tab_ward, tab_issues, tab_downloads = st.tabs([
         "📊 Summary",
-        "📋 Settlement Level",
         "🗺️ Ward Level",
         "⚠️ Operational Issues",
         "📥 Downloads & Export",
     ])
 
     with tab_summary:
-        _render_summary_tab(summary, df_settlement, df_ward, df_issues)
-
-    with tab_settlement:
-        _render_settlement_tab(df_settlement_display, thresholds)
+        _render_summary_tab(summary, df_ward, df_issues)
 
     with tab_ward:
         _render_ward_tab(df_ward_display, thresholds)
 
     with tab_issues:
-        _render_issues_tab(
-            df_issues, df_settlement_display, thresholds
-        )
+        _render_issues_tab(df_issues, thresholds)
 
     with tab_downloads:
         _render_downloads_tab(
-            summary, df_settlement_display, df_ward_display,
-            thresholds, df_issues,
+            summary, df_ward_display, thresholds, df_issues,
         )
 
 
 def _render_summary_tab(
-    summary: CoverageAnalysisSummary,
-    df_settlement: pd.DataFrame,
+    summary: WardCoverageAnalysisSummary,
     df_ward: pd.DataFrame,
     df_issues: pd.DataFrame,
 ) -> None:
@@ -552,37 +539,31 @@ def _render_summary_tab(
     k1, k2, k3 = st.columns(3)
     with k1:
         kpi_card(
-            "Total Settlements",
-            f"{summary.total_settlements:,}",
-            f"{summary.total_lgas} LGAs · {summary.total_wards} Wards",
+            "Total Wards",
+            f"{summary.total_wards:,}",
+            f"Across {summary.total_lgas} LGAs",
         )
     with k2:
         kpi_card(
-            "Settlement Visitation",
-            f"{summary.visited_settlements:,}",
-            f"{int(round(summary.visitation_pct))}% Visited",
+            "Avg. Visitation",
+            f"{int(round(summary.avg_visitation_pct))}%",
+            "Mean across wards",
         )
     with k3:
         kpi_card(
-            "Unvisited Settlements",
-            f"{summary.total_settlements - summary.visited_settlements:,}",
-            f"{int(round(100 - summary.visitation_pct))}% Unvisited",
+            "Avg. Vaccination Coverage",
+            f"{int(round(summary.avg_vaccination_pct))}%",
+            "Mean across wards",
         )
 
     k4, k5, k6 = st.columns(3)
     with k4:
         kpi_card(
-            "Avg. Vaccination Coverage",
-            f"{int(round(summary.avg_vaccination_pct))}%",
-            "Mean across settlements",
-        )
-    with k5:
-        kpi_card(
             "Avg. Household Coverage",
             f"{int(round(summary.avg_household_pct))}%",
-            "Mean across settlements",
+            "Mean across wards",
         )
-    with k6:
+    with k5:
         # Count unique wards with at least one issue.
         wards_with_issues = (
             df_issues[COL_WARD].nunique() if not df_issues.empty else 0
@@ -592,80 +573,23 @@ def _render_summary_tab(
             f"{wards_with_issues}",
             f"of {summary.total_wards} total wards",
         )
-
-
-def _render_settlement_tab(
-    df_settlement: pd.DataFrame,
-    thresholds: dict[str, CoverageThreshold],
-) -> None:
-    """Render interactive settlement-level master table with conditional formatting."""
-    st.markdown("#### Settlement-Level Coverage Master Table")
-
-    # Filter controls.
-    col_lga, col_ward, col_status = st.columns(3)
-    with col_lga:
-        lgas = ["All"] + sorted(
-            df_settlement[COL_LGA].dropna().unique().tolist()
+    with k6:
+        kpi_card(
+            "Total LGAs",
+            f"{summary.total_lgas}",
+            "Unique local government areas",
         )
-        selected_lga = st.selectbox(
-            "Filter by LGA:",
-            lgas,
-            key=f"{MODULE_KEY}_settlement_lga_filter",
-        )
-    with col_ward:
-        ward_options = ["All"]
-        if selected_lga != "All":
-            ward_options += sorted(
-                df_settlement.loc[
-                    df_settlement[COL_LGA] == selected_lga, "Ward"
-                ].dropna().unique().tolist()
-            )
-        else:
-            ward_options += sorted(
-                df_settlement["Ward"].dropna().unique().tolist()
-            )
-        selected_ward = st.selectbox(
-            "Filter by Ward:",
-            ward_options,
-            key=f"{MODULE_KEY}_settlement_ward_filter",
-        )
-    with col_status:
-        status_options = ["All", "Red", "Yellow", "Green", "N/A"]
-        selected_status = st.selectbox(
-            "Filter by Status (any indicator):",
-            status_options,
-            key=f"{MODULE_KEY}_settlement_status_filter",
-        )
-
-    filtered = df_settlement.copy()
-    if selected_lga != "All":
-        filtered = filtered[filtered[COL_LGA] == selected_lga]
-    if selected_ward != "All":
-        filtered = filtered[filtered["Ward"] == selected_ward]
-    if selected_status != "All":
-        status_cols = [c for c in _STATUS_COLS if c in filtered.columns]
-        if status_cols:
-            mask = filtered[status_cols].apply(
-                lambda col: col.astype(str).str.contains(selected_status, case=False, na=False)
-            ).any(axis=1)
-            filtered = filtered[mask]
-
-    st.caption(
-        f"Displaying {len(filtered):,} of {len(df_settlement):,} settlements"
-    )
-    _render_styled_table(filtered, thresholds)
 
 
 def _render_ward_tab(
     df_ward: pd.DataFrame,
     thresholds: dict[str, CoverageThreshold],
 ) -> None:
-    """Render ward-level aggregated table with conditional formatting."""
-    st.markdown("#### Ward-Level Coverage Summary")
+    """Render ward-level master table with conditional formatting."""
+    st.markdown("#### Ward-Level Coverage Table")
     st.info(
-        "**Aggregation method:** % Visitation = (visited / total settlements) × 100. "
-        "% Vaccination and % Household Coverage = mean of settlement-level values. "
-        "Each settlement is weighted equally regardless of population size.",
+        "**Data uploaded at ward level.** No settlement-to-ward aggregation "
+        "has been applied — values are as uploaded.",
         icon="ℹ️",
     )
 
@@ -707,10 +631,9 @@ def _render_ward_tab(
 
 def _render_issues_tab(
     df_issues: pd.DataFrame,
-    df_settlement_display: pd.DataFrame,
     thresholds: dict[str, CoverageThreshold],
 ) -> None:
-    """Render operational issues analysis with filtering and settlement drill-down."""
+    """Render operational issues analysis with filtering."""
     st.markdown("#### Operational Issues Analysis")
     st.caption(
         "Identifies wards where campaign indicators are misaligned. "
@@ -729,7 +652,6 @@ def _render_issues_tab(
     # ── Issue summary KPIs ────────────────────────────────────────────────
     unique_issue_wards = df_issues[COL_WARD].nunique()
     total_issue_rows = len(df_issues)
-    # Count distinct issue types present (excluding "Multiple Issues" tag).
     distinct_types = df_issues[COL_ISSUE_TYPE].nunique()
 
     k1, k2, k3 = st.columns(3)
@@ -797,78 +719,27 @@ def _render_issues_tab(
     )
     _render_styled_table(filtered_issues, thresholds)
 
-    # ── Settlement drill-down ─────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("##### Settlement-Level Drill-Down")
-    st.caption(
-        "Select a ward from the issues above to see its settlement-level detail."
-    )
-
-    # Build ward options from the filtered issues table.
-    affected_wards = filtered_issues[[COL_LGA, COL_WARD]].drop_duplicates()
-    if affected_wards.empty:
-        st.info("No wards match the current filter.", icon="ℹ️")
-        return
-
-    ward_labels = (
-        affected_wards[COL_WARD] + " (" + affected_wards[COL_LGA] + ")"
-    ).tolist()
-    selected_ward_label = st.selectbox(
-        "Select ward for drill-down:",
-        ward_labels,
-        key=f"{MODULE_KEY}_drilldown_ward",
-    )
-
-    if selected_ward_label:
-        # Parse the selection back to LGA + Ward.
-        idx = ward_labels.index(selected_ward_label)
-        drill_lga = affected_wards.iloc[idx][COL_LGA]
-        drill_ward = affected_wards.iloc[idx][COL_WARD]
-
-        # Filter settlement data for this ward.
-        mask = (
-            (df_settlement_display[COL_LGA] == drill_lga)
-            & (df_settlement_display[COL_WARD] == drill_ward)
-        )
-        df_drill = df_settlement_display[mask].copy()
-
-        # Select columns for drill-down display.
-        drill_cols = [
-            COL_LGA, COL_WARD, COL_SETTLEMENT,
-            COL_VISITATION, COL_VACCINATION, COL_HOUSEHOLD,
-            STATUS_VISITATION, STATUS_VACCINATION, STATUS_HOUSEHOLD,
-        ]
-        available_cols = [c for c in drill_cols if c in df_drill.columns]
-        df_drill = df_drill[available_cols]
-
-        st.markdown(
-            f"**{drill_ward}** ({drill_lga}) — "
-            f"{len(df_drill):,} settlement(s)"
-        )
-        _render_styled_table(df_drill, thresholds)
-
 
 # ── Downloads ─────────────────────────────────────────────────────────────────
 
 def _render_downloads_tab(
-    summary: CoverageAnalysisSummary,
-    df_settlement: pd.DataFrame,
+    summary: WardCoverageAnalysisSummary,
     df_ward: pd.DataFrame,
     thresholds: dict[str, CoverageThreshold],
     df_issues: pd.DataFrame,
 ) -> None:
     """Render Excel and CSV download buttons for all outputs."""
-    st.markdown("#### Export Coverage Analysis Reports")
+    st.markdown("#### Export Ward Coverage Analysis Reports")
 
     # ── Full Excel report ─────────────────────────────────────────────────
-    excel_bytes = generate_coverage_excel_report(
-        summary, df_settlement, df_ward, thresholds, df_issues
+    excel_bytes = generate_ward_coverage_excel_report(
+        summary, df_ward, thresholds, df_issues
     )
 
     st.download_button(
         label="📄 Download Full Excel Report (.xlsx)",
         data=excel_bytes,
-        file_name="Coverage_Analysis_Report.xlsx",
+        file_name="Ward_Coverage_Analysis_Report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         type="primary",
         key=f"{MODULE_KEY}_download_excel",
@@ -877,35 +748,25 @@ def _render_downloads_tab(
     st.markdown("---")
     st.markdown("##### Individual CSV Downloads")
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
-        st.markdown("**Settlement Coverage**")
-        settlement_csv = df_settlement.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            label="Download CSV",
-            data=settlement_csv,
-            file_name="Coverage_Settlement_Level.csv",
-            mime="text/csv",
-            key=f"{MODULE_KEY}_download_settlement_csv",
-        )
-    with c2:
         st.markdown("**Ward Coverage**")
         ward_csv = df_ward.to_csv(index=False).encode("utf-8")
         st.download_button(
             label="Download CSV",
             data=ward_csv,
-            file_name="Coverage_Ward_Level.csv",
+            file_name="Ward_Coverage_Level.csv",
             mime="text/csv",
             key=f"{MODULE_KEY}_download_ward_csv",
         )
-    with c3:
+    with c2:
         st.markdown("**Operational Issues**")
         if not df_issues.empty:
             issues_csv = df_issues.to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="Download CSV",
                 data=issues_csv,
-                file_name="Coverage_Operational_Issues.csv",
+                file_name="Ward_Coverage_Operational_Issues.csv",
                 mime="text/csv",
                 key=f"{MODULE_KEY}_download_issues_csv",
             )
@@ -916,35 +777,25 @@ def _render_downloads_tab(
     st.markdown("---")
     st.markdown("##### Individual Excel Downloads")
 
-    c4, c5, c6 = st.columns(3)
-    with c4:
-        st.markdown("**Settlement Coverage**")
-        settlement_xlsx = _single_sheet_excel(df_settlement, "Settlement Coverage", thresholds)
-        st.download_button(
-            label="Download Excel",
-            data=settlement_xlsx,
-            file_name="Coverage_Settlement_Level.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"{MODULE_KEY}_download_settlement_xlsx",
-        )
-    with c5:
+    c3, c4 = st.columns(2)
+    with c3:
         st.markdown("**Ward Coverage**")
         ward_xlsx = _single_sheet_excel(df_ward, "Ward Coverage", thresholds)
         st.download_button(
             label="Download Excel",
             data=ward_xlsx,
-            file_name="Coverage_Ward_Level.xlsx",
+            file_name="Ward_Coverage_Level.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"{MODULE_KEY}_download_ward_xlsx",
         )
-    with c6:
+    with c4:
         st.markdown("**Operational Issues**")
         if not df_issues.empty:
             issues_xlsx = _single_sheet_excel(df_issues, "Operational Issues", thresholds)
             st.download_button(
                 label="Download Excel",
                 data=issues_xlsx,
-                file_name="Coverage_Operational_Issues.xlsx",
+                file_name="Ward_Coverage_Operational_Issues.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key=f"{MODULE_KEY}_download_issues_xlsx",
             )

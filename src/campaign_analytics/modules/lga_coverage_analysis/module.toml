@@ -1,0 +1,7 @@
+id = "lga_coverage_analysis"
+name = "LGA Coverage Analysis"
+group = "Campaign Modules"
+icon = "🏛️"
+order = 50
+status = "active"
+entry_point = "campaign_analytics.modules.lga_coverage_analysis.module:render"

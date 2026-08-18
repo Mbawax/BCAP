@@ -375,7 +375,7 @@ def _coerce_numeric(values: pd.Series) -> pd.Series:
         if not non_zero.empty and (non_zero.abs() <= 1.0).all() and (non_zero.max() > 0):
             numeric = numeric * 100.0
 
-    return numeric.round(1)
+    return numeric.round(0)
 
 
 # ── Processing ────────────────────────────────────────────────────────────────
@@ -479,10 +479,10 @@ def build_settlement_master(
     # Drop internal join key.
     master = master.drop(columns=["unique_id"])
 
-    # Round percentage columns to one decimal.
+    # Round percentage columns to integer.
     for col in [COL_VACCINATION, COL_HOUSEHOLD]:
         if col in master.columns:
-            master[col] = pd.to_numeric(master[col], errors="coerce").round(1)
+            master[col] = pd.to_numeric(master[col], errors="coerce").round(0)
 
     # Reorder columns to match the spec.
     master = master[SETTLEMENT_COLUMNS].reset_index(drop=True)
@@ -490,9 +490,9 @@ def build_settlement_master(
     # ── Summary KPIs ─────────────────────────────────────────────────────
     total_settlements = len(master)
     visited = int((master[COL_VISITATION] == 100.0).sum())
-    visitation_pct = round(visited / total_settlements * 100, 1) if total_settlements > 0 else 0.0
-    avg_vacc = round(master[COL_VACCINATION].dropna().mean(), 1) if master[COL_VACCINATION].notna().any() else 0.0
-    avg_hh = round(master[COL_HOUSEHOLD].dropna().mean(), 1) if master[COL_HOUSEHOLD].notna().any() else 0.0
+    visitation_pct = round(visited / total_settlements * 100, 0) if total_settlements > 0 else 0.0
+    avg_vacc = round(master[COL_VACCINATION].dropna().mean(), 0) if master[COL_VACCINATION].notna().any() else 0.0
+    avg_hh = round(master[COL_HOUSEHOLD].dropna().mean(), 0) if master[COL_HOUSEHOLD].notna().any() else 0.0
     total_wards = master[COL_WARD].nunique()
     total_lgas = master[COL_LGA].nunique()
 
@@ -528,13 +528,13 @@ def build_ward_summary(df_settlement: pd.DataFrame) -> pd.DataFrame:
     for (lga, ward), group in ward_groups:
         total = len(group)
         visited = int((group[COL_VISITATION] == 100.0).sum())
-        vis_pct = round(visited / total * 100, 1) if total > 0 else 0.0
+        vis_pct = round(visited / total * 100, 0) if total > 0 else 0.0
 
         vacc_mean = group[COL_VACCINATION].dropna().mean()
-        vacc_pct = round(vacc_mean, 1) if pd.notna(vacc_mean) else None
+        vacc_pct = round(vacc_mean, 0) if pd.notna(vacc_mean) else None
 
         hh_mean = group[COL_HOUSEHOLD].dropna().mean()
-        hh_pct = round(hh_mean, 1) if pd.notna(hh_mean) else None
+        hh_pct = round(hh_mean, 0) if pd.notna(hh_mean) else None
 
         ward_rows.append({
             COL_LGA: lga,
@@ -811,10 +811,7 @@ def _apply_excel_formatting(
                 else:
                     try:
                         num = float(val)
-                        if num == int(num):
-                            cell.value = f"{int(num)}%"
-                        else:
-                            cell.value = f"{num:.1f}%"
+                        cell.value = f"{int(round(num))}%"
 
                         if num >= 100.0:
                             cell.fill = fill_green
@@ -874,10 +871,10 @@ def generate_coverage_excel_report(
             {"Campaign Metric": "Total LGAs Analysed", "Value": summary.total_lgas},
             {"Campaign Metric": "Total Wards Analysed", "Value": summary.total_wards},
             {"Campaign Metric": "Total Planned Settlements", "Value": summary.total_settlements},
-            {"Campaign Metric": "Visited Settlements", "Value": f"{summary.visited_settlements:,} ({summary.visitation_pct}%)"},
-            {"Campaign Metric": "Unvisited Settlements", "Value": f"{summary.total_settlements - summary.visited_settlements:,} ({round(100 - summary.visitation_pct, 1)}%)"},
-            {"Campaign Metric": "Avg. Vaccination Coverage %", "Value": f"{summary.avg_vaccination_pct}%"},
-            {"Campaign Metric": "Avg. Household Coverage %", "Value": f"{summary.avg_household_pct}%"},
+            {"Campaign Metric": "Visited Settlements", "Value": f"{summary.visited_settlements:,} ({int(round(summary.visitation_pct))}%)"},
+            {"Campaign Metric": "Unvisited Settlements", "Value": f"{summary.total_settlements - summary.visited_settlements:,} ({int(round(100 - summary.visitation_pct))}%)"},
+            {"Campaign Metric": "Avg. Vaccination Coverage %", "Value": f"{int(round(summary.avg_vaccination_pct))}%"},
+            {"Campaign Metric": "Avg. Household Coverage %", "Value": f"{int(round(summary.avg_household_pct))}%"},
         ]
         if df_issues is not None and not df_issues.empty:
             summary_data.append({"Campaign Metric": "Wards with Operational Issues", "Value": df_issues[COL_WARD].nunique()})
